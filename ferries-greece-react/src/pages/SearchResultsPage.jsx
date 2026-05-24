@@ -17,16 +17,24 @@ export default function SearchResultsPage() {
 
   const from      = searchParams.get('from');
   const to        = searchParams.get('to');
+  const fromPort  = searchParams.get('fromPort') ?? '';
+  const toPort    = searchParams.get('toPort')   ?? '';
   const routeCode = searchParams.get('routeCode');
   const date      = searchParams.get('date');
-  const pax       = Number(searchParams.get('paxAdultNumber') ?? 1);
+  const pax       = Number(searchParams.get('paxAdultNumber')    ?? 1);
+  const paxChildren = Number(searchParams.get('paxChildrenNumber') ?? 0);
+  const paxInfants  = Number(searchParams.get('paxInfantNumber')   ?? 0);
   const tripType  = searchParams.get('tripType') ?? 'one-way';
   const returnDate = searchParams.get('returnDate') ?? '';
 
   // Persist search params into booking context
   useEffect(() => {
     if (routeCode) {
-      updateBooking({ fromCity: from, toCity: to, routeCode, date, returnDate, paxAdultNumber: pax, tripType });
+      updateBooking({
+        fromCity: from, toCity: to, routeCode, fromPort, toPort, date, returnDate,
+        paxAdultNumber: pax, paxChildrenNumber: paxChildren, paxInfantNumber: paxInfants,
+        tripType,
+      });
     }
   }, [routeCode]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -37,10 +45,25 @@ export default function SearchResultsPage() {
     setLoading(true);
     setError(null);
 
-    searchVoyages({ route: routeCode, departureDate: date, paxAdultNumber: pax })
+    searchVoyages({
+      routeCode,
+      fromPortCode:  fromPort,
+      toPortCode:    toPort,
+      departureDate: date,
+      returnDate:    tripType === 'return' ? returnDate : '',
+      paxAdultNumber:    pax,
+      paxChildrenNumber: paxChildren,
+      paxInfantNumber:   paxInfants,
+    })
       .then((data) => {
         if (cancelled) return;
-        const list = Array.isArray(data) ? data : (data?.results ?? data?.voyages ?? []);
+        // OLTA response: { voyages: { aller, return, aller_grouped, return_grouped }, ... }
+        // Legacy fallback: array or { results / voyages }
+        let list = [];
+        if (Array.isArray(data)) list = data;
+        else if (Array.isArray(data?.voyages?.aller)) list = data.voyages.aller;
+        else if (Array.isArray(data?.voyages))        list = data.voyages;
+        else if (Array.isArray(data?.results))        list = data.results;
         setVoyages(list);
       })
       .catch((err) => {
@@ -49,7 +72,7 @@ export default function SearchResultsPage() {
       .finally(() => { if (!cancelled) setLoading(false); });
 
     return () => { cancelled = true; };
-  }, [routeCode, date, pax]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [routeCode, date, pax, paxChildren, paxInfants]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const heading = from && to ? `${cap(from)} → ${cap(to)}` : 'Available ferries';
 
