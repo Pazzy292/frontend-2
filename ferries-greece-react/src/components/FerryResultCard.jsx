@@ -3,24 +3,50 @@ import { useBooking } from '../context/BookingContext.jsx';
 
 // Safely extract a value from a voyage object regardless of backend field name
 function field(v, ...keys) {
-  for (const k of keys) { if (v[k] != null) return v[k]; }
+  for (const k of keys) { if (v?.[k] != null) return v[k]; }
   return null;
+}
+
+// Format an ISO datetime or H:M string as "HH:MM"
+function formatTime(value) {
+  if (!value) return '—';
+  if (typeof value === 'string' && /^\d{2}:\d{2}/.test(value)) return value.slice(0, 5);
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+// Format minutes as "Xh Ym"
+function formatDuration(minutes) {
+  if (minutes == null) return '—';
+  const n = Number(minutes);
+  if (!Number.isFinite(n)) return String(minutes);
+  const h = Math.floor(n / 60);
+  const m = n % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
 export default function FerryResultCard({ voyage }) {
   const { updateBooking } = useBooking();
   const navigate = useNavigate();
 
+  const route      = voyage?.route ?? {};
+
   const id         = field(voyage, 'id', 'trip_id', 'voyage_id');
-  const operator   = field(voyage, 'operator', 'company', 'operator_name') ?? '—';
+  const operator   = field(voyage, 'operator', 'company', 'operator_name', 'provider') ?? '—';
   const vessel     = field(voyage, 'vessel', 'ship', 'ship_name', 'ferry_name') ?? '—';
-  const depTime    = field(voyage, 'departure_time', 'departure', 'dep_time') ?? '—';
-  const arrTime    = field(voyage, 'arrival_time', 'arrival', 'arr_time') ?? '—';
-  const duration   = field(voyage, 'duration', 'travel_time') ?? '—';
+  const depRaw     = field(voyage, 'departure_time', 'departure', 'dep_time', 'departure_datetime');
+  const arrRaw     = field(voyage, 'arrival_time', 'arrival', 'arr_time', 'arrival_datetime');
+  const depTime    = formatTime(depRaw);
+  const arrTime    = formatTime(arrRaw);
+  const durationRaw = field(voyage, 'duration', 'travel_time');
+  const duration   = durationRaw ?? formatDuration(field(voyage, 'duration_minutes'));
   const price      = field(voyage, 'price', 'price_from', 'total_price', 'amount');
   const currency   = field(voyage, 'currency') ?? 'EUR';
-  const fromPort   = field(voyage, 'departure_port', 'from_port', 'origin') ?? '—';
-  const toPort     = field(voyage, 'arrival_port', 'to_port', 'destination') ?? '—';
+  const fromPort   = field(voyage, 'departure_port', 'from_port', 'origin')
+                  ?? field(route,  'from_port', 'departure_port', 'origin') ?? '—';
+  const toPort     = field(voyage, 'arrival_port', 'to_port', 'destination')
+                  ?? field(route,  'to_port', 'arrival_port', 'destination') ?? '—';
 
   const handleChoose = () => {
     updateBooking({

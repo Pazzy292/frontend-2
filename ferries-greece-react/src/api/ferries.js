@@ -8,131 +8,144 @@ export function getRoutes() {
   return api.get('/voyages/routes/');
 }
 
+/** GET /api/voyages/ports/ */
+export function getPorts() {
+  return api.get('/voyages/ports/');
+}
+
+/** GET /api/voyages/destinations/ */
+export function getDestinations() {
+  return api.get('/voyages/destinations/');
+}
+
 /**
- * Search available voyages.
- * POST /api/voyages/search/
- * @param {string}  route           Route code, e.g. "FRAJAFRMRS__FRMRSFRAJA"
- * @param {string}  departureDate   ISO date string, e.g. "2026-06-15"
+ * Primary voyage search (OLTA aggregator).
+ * Accepts both GET and POST on the backend; we use POST with JSON.
+ * POST /api/voyages/search-olta/
+ *
+ * The backend auto-detects the provider from the routeCode format
+ * (3-char ports, 5-char ports, dash, 6-letter, ≥8-letter, short alnum).
+ * fromPortCode/toPortCode are used as fallback when routeCode is missing.
+ *
+ * Response shape:
+ *   { status, voyages: { aller[], return[], aller_grouped[], return_grouped[] },
+ *     pagination, provider_results: { GNV, grimaldi, meridionale, BALEARIA }, meta }
  */
 export function searchVoyages({
-  route,
+  routeCode,
+  fromPortCode,
+  toPortCode,
   departureDate,
-  paxAdultNumber      = 1,
-  paxChildrenNumber   = 0,
-  paxInfantNumber     = 0,
-  paxDogNumber        = 0,
-  paxCatNumber        = 0,
-  paxMotorcycleNumber = 0,
+  returnDate            = '',
+  paxAdultNumber        = 1,
+  paxChildrenNumber     = 0,
+  paxInfantNumber       = 0,
+  paxAdultChairNumber   = 0,
+  paxChildrenChairNumber = 0,
+  paxDogNumber          = 0,
+  paxCatNumber          = 0,
+  paxMotorcycleNumber   = 0,
   accommodationQuantity = 0,
 }) {
-  return api.post('/voyages/search/', {
-    route,
+  const body = {
+    routeCode,
+    fromPortCode,
+    toPortCode,
     departureDate,
     paxAdultNumber,
     paxChildrenNumber,
     paxInfantNumber,
-    paxAdultChairNumber:    0,
-    paxChildrenChairNumber: 0,
+    paxAdultChairNumber,
+    paxChildrenChairNumber,
     paxDogNumber,
     paxCatNumber,
     paxMotorcycleNumber,
     accommodationQuantity,
-  });
+  };
+  if (returnDate) body.returnDate = returnDate;
+  return api.post('/voyages/search-olta/', body);
 }
 
 /**
- * Get available departure dates for a route in a given month.
+ * Availability calendar for a route.
+ * GET /api/voyages/calendar/?route_code=...&year=YYYY&month=M
  *
- * The backend has no dedicated calendar endpoint, so this performs a
- * per-day scan of POST /api/voyages/search/ across the month and returns
- * the ISO dates (YYYY-MM-DD) that have at least one sailing.
+ * Response: { success, from_date, to_date, results: [{ route_code, provider, dates: string[] }], merged_results: string[] }
  *
- * Results are cached in-memory per (routeCode, year, month).
- *
- * @param {string} routeCode  e.g. "FRAJAFRMRS__FRMRSFRAJA"
- * @param {number} year       4-digit year, e.g. 2026
- * @param {number} month      1-12
- * @param {object} [opts]
- * @param {number} [opts.paxAdultNumber=1]
- * @param {AbortSignal} [opts.signal]
- * @returns {Promise<string[]>} sorted list of available ISO dates
+ * @param {string} routeCode  Full route code (e.g. "FRAJAFRMRS__FRMRSFRAJA") or short code
+ * @param {number} [year]
+ * @param {number} [month]    1-12
  */
 const _availableDatesCache = new Map();
 export async function getAvailableDates(routeCode, year, month, opts = {}) {
-  const { paxAdultNumber = 1, signal } = opts;
   if (!routeCode) return [];
-
-  const key = `${routeCode}|${year}-${month}|${paxAdultNumber}`;
+  const key = `${routeCode}|${year ?? ''}-${month ?? ''}`;
   if (_availableDatesCache.has(key)) return _availableDatesCache.get(key);
 
-  const daysInMonth = new Date(year, month, 0).getDate();
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const params = new URLSearchParams({ route_code: routeCode });
+  if (year)  params.set('year',  String(year));
+  if (month) params.set('month', String(month));
 
-  const dates = [];
-  for (let d = 1; d <= daysInMonth; d++) {
-    const dt = new Date(year, month - 1, d);
-    if (dt < today) continue;
-    const iso = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    dates.push(iso);
-  }
-
-  const results = await Promise.all(
-    dates.map(async (iso) => {
-      try {
-        if (signal?.aborted) return null;
-        const res = await searchVoyages({
-          route: routeCode,
-          departureDate: iso,
-          paxAdultNumber,
-        });
-        const voyages = res?.results ?? res?.voyages ?? res?.data ?? res;
-        const hasVoyages = Array.isArray(voyages) ? voyages.length > 0 : !!voyages;
-        return hasVoyages ? iso : null;
-      } catch {
-        return null;
-      }
-    }),
-  );
-
-  const available = results.filter(Boolean);
-  _availableDatesCache.set(key, available);
-  return available;
+  const res = await api.get(`/voyages/calendar/?${params.toString()}`);
+  const merged = Array.isArray(res?.merged_results) ? res.merged_results : [];
+  const fromResults = Array.isArray(res?.results)
+    ? res.results.flatMap((r) => r?.dates ?? [])
+    : [];
+  const dates = Array.from(new Set([...merged, ...fromResults])).sort();
+  _availableDatesCache.set(key, dates);
+  return dates;
 }
 
-/** GET /api/voyages/{id}/cart/ */
+/* --------------------------- Booking & Cart --------------------------- */
+
+/** POST /api/voyages/booking/create/ */
+export function createBooking(data) {
+  return api.post('/voyages/booking/create/', data);
+}
+
+/** POST /api/voyages/booking/recall/ */
+export function recallBooking(data) {
+  return api.post('/voyages/booking/recall/', data);
+}
+
+/** POST /api/voyages/cart/create/ */
+export function createCart(data) {
+  return api.post('/voyages/cart/create/', data);
+}
+
+/** GET /api/voyages/{uid}/cart/ */
 export function getCart(voyageId) {
   return api.get(`/voyages/${voyageId}/cart/`);
 }
 
-/** POST /api/voyages/{id}/cart/update/ */
+/** PUT /api/voyages/{uid}/cart/update/ */
 export function updateCart(voyageId, data) {
-  return api.post(`/voyages/${voyageId}/cart/update/`, data);
+  return api.put(`/voyages/${voyageId}/cart/update/`, data);
 }
 
-/** POST /api/voyages/{id}/cart/checkout/ */
+/** POST /api/voyages/{uid}/cart/checkout/ */
 export function checkoutCart(voyageId) {
   return api.post(`/voyages/${voyageId}/cart/checkout/`, {});
 }
 
-/** POST /api/voyages/{id}/cart/clear/ */
+/** DELETE /api/voyages/{uid}/cart/clear/ */
 export function clearCart(voyageId) {
-  return api.post(`/voyages/${voyageId}/cart/clear/`, {});
+  return api.delete(`/voyages/${voyageId}/cart/clear/`);
 }
 
-/** GET /api/voyages/{id}/order/ */
+/** GET /api/voyages/{uid}/order/ */
 export function getOrder(voyageId) {
   return api.get(`/voyages/${voyageId}/order/`);
 }
 
-/** GET /api/voyages/{id}/ticket/ */
+/** GET /api/voyages/{uid}/order/ticket/ */
 export function getTicket(voyageId) {
-  return api.get(`/voyages/${voyageId}/ticket/`);
+  return api.get(`/voyages/${voyageId}/order/ticket/`);
 }
 
-/** GET /api/voyages/{id}/ticket/pdf/ */
+/** GET /api/voyages/{uid}/order/ticket/pdf/ */
 export function getTicketPdf(voyageId) {
-  return api.get(`/voyages/${voyageId}/ticket/pdf/`);
+  return api.get(`/voyages/${voyageId}/order/ticket/pdf/`);
 }
 
 /** GET /api/voyages/{id}/addons/ */
